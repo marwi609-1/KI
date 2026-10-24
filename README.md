@@ -9,8 +9,16 @@ cp .env.example .env        # VOYAGE_API_KEY eintragen, optional ANTHROPIC_API_K
 docker compose up -d --build
 ```
 
-- Dashboard: `http://<server>:8000`
-- Qdrant-Web-UI: `http://<server>:6333/dashboard`
+Die Ports sind nur an `127.0.0.1` des Servers gebunden (weder Dashboard noch Qdrant haben eine Authentifizierung). Der Zugriff läuft per SSH-Tunnel vom eigenen PC:
+
+```bash
+ssh -L 8000:localhost:8000 -L 6333:localhost:6333 <user>@<server>
+```
+
+- Dashboard: `http://localhost:8000`
+- Qdrant-Web-UI: `http://localhost:6333/dashboard`
+
+In VS Code (Remote-SSH) genügt es, die Ports 8000 und 6333 im Panel „Ports“ weiterzuleiten.
 
 Beim ersten Start bettet das Backend die Beispielsätze und die Wissensbasis in **einem** Voyage-Request ein und speichert sie in Qdrant (Volume `qdrant_data`). Danach wird nur noch eingebettet, was du eingibst; identische Texte werden im Speicher gecacht. Wechselst du `VOYAGE_MODEL`, legt das Backend die Collections automatisch neu an.
 
