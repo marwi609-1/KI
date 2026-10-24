@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import code_view, rag, vectorstore as vs, workouts
+from . import agent, code_view, rag, vectorstore as vs, workouts
 from .embeddings import embedder
 from .fit_parser import AthleteSettings, parse_fit
 from .vectorizer import METRIC_DIMENSIONS
@@ -379,6 +379,55 @@ async def workout_coach(body: CoachIn):
                     yield sse("done", {"note": payload, "ms": round((time.perf_counter() - t1) * 1000)})
         except Exception as exc:
             log.exception("Coach-Anfrage fehlgeschlagen")
+            yield sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+# ---------- Modul 6: Agentic RAG mit LangGraph ----------
+
+
+class AgentIn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+@app.get("/api/agent/graph")
+async def agent_graph():
+    return {
+        "mermaid": agent.graph.get_graph().draw_mermaid(),
+        "tools": [{"name": t["name"], "description": t["description"]} for t in agent.TOOLS],
+        "planner": rag.settings.claude_model if rag.llm_available() else "Regeln (kein ANTHROPIC_API_KEY)",
+        "max_tool_rounds": agent.MAX_TOOL_ROUNDS,
+    }
+
+
+@app.post("/api/agent/run")
+async def agent_run(body: AgentIn):
+    async def events():
+        try:
+            t0 = time.perf_counter()
+            async for mode, chunk in agent.graph.astream(
+                agent.initial_state(body.question), stream_mode=["updates", "custom"]
+            ):
+                if mode == "custom":
+                    yield sse("delta", {"text": chunk["delta"]})
+                    continue
+                for node, update in chunk.items():
+                    yield sse(
+                        "node",
+                        agent.jsonable(
+                            {
+                                "node": node,
+                                "trace": update.get("trace", []),
+                                "sources": update.get("sources", []),
+                                "answer": update.get("answer"),
+                                "ms": round((time.perf_counter() - t0) * 1000),
+                            }
+                        ),
+                    )
+            yield sse("done", {"ms": round((time.perf_counter() - t0) * 1000)})
+        except Exception as exc:
+            log.exception("Agent fehlgeschlagen")
             yield sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
 
     return StreamingResponse(events(), media_type="text/event-stream")

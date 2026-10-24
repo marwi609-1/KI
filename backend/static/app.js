@@ -50,6 +50,7 @@ function showTab(id) {
   if (id === "m3" && !spaceLoaded) loadSpace();
   if (id === "m4") loadKnowledge();
   if (id === "m5" && !workoutsLoaded) initWorkouts();
+  if (id === "m6" && !graphInfo) initAgent();
   window.dispatchEvent(new Event("resize"));
 }
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
@@ -557,6 +558,121 @@ $("f5c").onsubmit = async (ev) => {
       }
     });
     recordCall("m5", { method: "POST", path: "/api/workouts/coach", body, events: mergeDeltas(events) });
+  } catch (e) { showError(e); } finally { busy(ev.target, false); }
+};
+
+// ---------- Modul 6: Agentic RAG mit LangGraph ----------
+
+let graphInfo = null;
+const TOOL_DE = {
+  suche_wissensbasis: "Wissensbasis durchsuchen",
+  suche_trainings: "Trainings semantisch suchen",
+  filtere_trainings: "Trainings filtern (Payload)",
+  aehnliche_trainings: "Ähnliche Trainings (Kennzahlen)",
+};
+
+// mermaid.render darf nicht parallel laufen – Aufrufe werden hintereinander ausgeführt
+let graphRender = Promise.resolve();
+function renderGraph(visited) {
+  const snapshot = new Set(visited);
+  graphRender = graphRender.then(() => drawGraph(snapshot)).catch((e) => console.warn("Graph", e));
+  return graphRender;
+}
+
+async function drawGraph(visited) {
+  if (!graphInfo || !window.mermaid) return;
+  let text = graphInfo.mermaid;
+  if (visited.size) {
+    text += "\n\tclassDef visited fill:#c7d2fe,stroke:#4f46e5,stroke-width:2px";
+    text += `\n\tclass ${[...visited].join(",")} visited`;
+  }
+  const { svg } = await mermaid.render(`g6_${Date.now()}`, text);
+  $("graph6").innerHTML = svg;
+}
+
+async function initAgent() {
+  try {
+    graphInfo = await api("/api/agent/graph");
+    if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: "neutral" });
+    await renderGraph(new Set());
+    $("planner6").textContent = `Planer im Knoten „agent“: ${graphInfo.planner} · höchstens ${graphInfo.max_tool_rounds} Werkzeugrunden, danach erzwingt „final“ eine Antwort.`;
+    $("tools6").innerHTML = graphInfo.tools.map((t) => `<li><code class="text-indigo-700 font-semibold">${esc(t.name)}</code><br>${esc(t.description)}</li>`).join("");
+  } catch (e) { showError(e); }
+}
+
+const EXAMPLES6 = [
+  "Was war meine härteste Einheit und welche Einheiten hatten eine ähnliche Belastung?",
+  "Wann starten die Vereinsausfahrten und welche meiner Einheiten war eine lockere Grundlage?",
+  "Bei welchen Einheiten ist mein Puls gedriftet?",
+  "Was ist ein HNSW-Index?",
+];
+EXAMPLES6.forEach((q) => {
+  const chip = document.createElement("span");
+  chip.className = "chip bg-slate-100 hover:bg-indigo-100 rounded-full px-3 py-1";
+  chip.textContent = q;
+  chip.onclick = () => { $("q6").value = q; $("f6").requestSubmit(); };
+  $("examples6").appendChild(chip);
+});
+
+function traceCard(t, ms) {
+  const time = `<span class="text-xs text-slate-400">${ms} ms</span>`;
+  if (t.node === "agent") {
+    const head = `<b>agent</b> · Planer: ${esc(t.planner || "")}`;
+    const body = t.decision === "tools"
+      ? `entscheidet sich für ${t.calls.length} Werkzeugaufruf${t.calls.length > 1 ? "e" : ""}:` +
+        t.calls.map((c) => `<div class="mt-1"><code class="text-indigo-700">${esc(c.name)}</code> <code class="text-xs text-slate-500">${esc(JSON.stringify(c.input))}</code></div>`).join("") +
+        (t.text ? `<div class="mt-1 text-slate-500 italic">${esc(t.text)}</div>` : "")
+      : "entscheidet: genug Informationen → antworten";
+    return `<li class="border-l-4 border-indigo-500 bg-indigo-50 rounded-r-lg p-3 text-sm"><div class="flex justify-between">${head}${time}</div><div class="mt-1">${body}</div></li>`;
+  }
+  if (t.node === "tools") {
+    const hits = t.hits.length
+      ? t.hits.map((h) => `<div>[${h.n}] ${esc(h.title)} <span class="text-xs text-slate-400">${esc(h.kind)}</span></div>`).join("")
+      : '<div class="text-slate-500">keine Treffer</div>';
+    return `<li class="border-l-4 border-emerald-500 bg-emerald-50 rounded-r-lg p-3 text-sm ml-4"><div class="flex justify-between"><span><b>tools</b> · ${esc(TOOL_DE[t.tool] || t.tool)}</span>${time}</div><div class="mt-1">${hits}</div></li>`;
+  }
+  return `<li class="border-l-4 border-amber-500 bg-amber-50 rounded-r-lg p-3 text-sm"><div class="flex justify-between"><b>final</b>${time}</div><div class="mt-1">Werkzeuglimit erreicht – Antwort wird erzwungen.</div></li>`;
+}
+
+$("f6").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!graphInfo) await initAgent();
+  busy(ev.target, true);
+  $("run6").classList.remove("hidden");
+  ["trace6", "answer6", "sources6", "ms6"].forEach((id) => ($(id).textContent = ""));
+  const visited = new Set(["__start__"]);
+  await renderGraph(visited);
+  const body = { question: $("q6").value };
+  const events = [];
+  const sources = [];
+  let text = "";
+  const showAnswer = (t) => ($("answer6").innerHTML = esc(t).replace(/\[(\d+)\]/g, '<span class="cite">[$1]</span>'));
+  try {
+    await streamSSE("/api/agent/run", body, (event, d) => {
+      events.push({ event, data: d });
+      if (event === "delta") {
+        text += d.text;
+        showAnswer(text);
+      } else if (event === "node") {
+        visited.add(d.node);
+        renderGraph(visited);
+        d.trace.forEach((t) => {
+          $("trace6").insertAdjacentHTML("beforeend", traceCard(t, d.ms));
+          // Text vor einem Werkzeugaufruf gehört zum Schritt, nicht zur Antwort
+          if (t.node === "agent" && t.decision === "tools") { text = ""; showAnswer(""); }
+        });
+        sources.push(...d.sources);
+        if (d.answer) showAnswer(d.answer);
+      } else if (event === "done") {
+        visited.add("__end__");
+        renderGraph(visited);
+        $("ms6").textContent = `· ${d.ms} ms gesamt`;
+      } else if (event === "error") {
+        $("answer6").textContent = `Fehler: ${d.detail}`;
+      }
+    });
+    $("sources6").innerHTML = sources.map((s) => `<li class="border border-slate-200 rounded p-2"><b>[${s.n}] ${esc(s.title)}</b> <span class="text-slate-400">${esc(s.kind)}</span><div class="text-slate-600 whitespace-pre-wrap">${esc(s.text || "")}</div></li>`).join("");
+    recordCall("m6", { method: "POST", path: "/api/agent/run", body, events: mergeDeltas(events) });
   } catch (e) { showError(e); } finally { busy(ev.target, false); }
 };
 

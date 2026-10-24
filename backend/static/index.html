@@ -7,11 +7,12 @@
   <script src="https://cdn.tailwindcss.com/3.4.16"></script>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <style>
     .tab.tab-active { background: #4f46e5; color: #fff; }
     .chip { cursor: pointer; }
-    #answer .cite, #coachans5 .cite { color: #4f46e5; font-weight: 600; }
+    #answer .cite, #coachans5 .cite, #answer6 .cite { color: #4f46e5; font-weight: 600; }
     .code-panel pre { margin: 0; }
     .code-panel pre code.hljs { border-radius: 0.5rem; font-size: 12px; line-height: 1.5; max-height: 520px; }
     .code-tab.active { background: #1e293b; color: #fff; }
@@ -32,6 +33,7 @@
       <button data-tab="m3" class="tab px-3 py-1.5 rounded-lg bg-slate-100">3 · 2D-Vektorraum</button>
       <button data-tab="m4" class="tab px-3 py-1.5 rounded-lg bg-slate-100">4 · RAG-Inspektor</button>
       <button data-tab="m5" class="tab px-3 py-1.5 rounded-lg bg-slate-100">5 · Trainingsdaten (FIT)</button>
+      <button data-tab="m6" class="tab px-3 py-1.5 rounded-lg bg-slate-100">6 · Agentic RAG (LangGraph)</button>
     </nav>
   </header>
 
@@ -272,6 +274,47 @@
         </div>
       </div>
       <div class="code-panel" data-module="m5"></div>
+    </section>
+    <!-- Modul 6 -->
+    <section id="m6" class="module hidden space-y-4">
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <h2 class="text-lg font-semibold">Agentic RAG mit LangGraph</h2>
+        <p class="text-sm text-slate-600 mt-1">Modul 4 ist eine feste Kette: einbetten → suchen → antworten. Hier entscheidet das LLM selbst, <em>welches</em> Werkzeug es <em>wie oft</em> aufruft – und kann Ergebnisse verketten (erst die härteste Einheit finden, dann über deren ID ähnliche suchen). LangGraph modelliert das als Zustandsgraph mit bedingten Kanten und einer Schleife mit Obergrenze.</p>
+        <div class="mt-3 grid sm:grid-cols-2 gap-3 text-xs">
+          <div class="bg-slate-50 rounded-lg p-3"><b>Lineare Pipeline (Modul 4)</b><br>Immer genau eine Suche in einer Quelle · vorhersehbar, schnell, günstig · scheitert an Fragen, die mehrere Schritte oder Quellen brauchen.</div>
+          <div class="bg-indigo-50 rounded-lg p-3"><b>Agent (dieses Modul)</b><br>Beliebig viele Suchen in mehreren Quellen · kann nachschärfen und kombinieren · dafür mehr LLM-Aufrufe, mehr Latenz, weniger vorhersehbar.</div>
+        </div>
+      </div>
+      <div class="grid lg:grid-cols-5 gap-4">
+        <div class="lg:col-span-2 space-y-4">
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h3 class="font-semibold">Der Graph</h3>
+            <div id="graph6" class="mt-2 flex justify-center overflow-x-auto"></div>
+            <p id="planner6" class="text-xs text-slate-500 mt-2"></p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h3 class="font-semibold">Werkzeuge des Agenten</h3>
+            <ul id="tools6" class="mt-2 space-y-2 text-xs text-slate-600"></ul>
+          </div>
+        </div>
+        <div class="lg:col-span-3 space-y-4">
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <div class="flex flex-wrap gap-2 text-xs" id="examples6"></div>
+            <form id="f6" class="mt-3 flex flex-col sm:flex-row gap-2">
+              <input id="q6" class="flex-1 min-w-0 border border-slate-300 rounded-lg px-3 py-2 text-sm" value="Was war meine härteste Einheit und welche Einheiten hatten eine ähnliche Belastung?">
+              <button class="bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm">Agent starten</button>
+            </form>
+          </div>
+          <div id="run6" class="hidden bg-white rounded-xl shadow-sm p-5">
+            <h3 class="font-semibold">Ablauf <span id="ms6" class="text-xs text-slate-400 font-normal"></span></h3>
+            <ol id="trace6" class="mt-3 space-y-2"></ol>
+            <h3 class="font-semibold mt-5">Antwort</h3>
+            <div id="answer6" class="mt-2 text-sm leading-relaxed whitespace-pre-wrap"></div>
+            <details class="mt-3 text-sm"><summary class="cursor-pointer text-slate-600">Alle gesammelten Quellen</summary><ol id="sources6" class="mt-2 space-y-2 text-xs"></ol></details>
+          </div>
+        </div>
+      </div>
+      <div class="code-panel" data-module="m6"></div>
     </section>
   </main>
 

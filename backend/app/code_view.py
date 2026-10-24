@@ -48,6 +48,17 @@ SOURCES: dict[str, list[tuple[str, str, str]]] = {
         ("app.workouts", "store_activity", "Beide Vektoren und die Payload in einem Punkt speichern."),
         ("app.workouts", "search", "Suche über einen der beiden Vektoren (Parameter using)."),
     ],
+    "m6": [
+        ("app.agent", "build_graph", "Der Zustandsgraph: Knoten agent, tools, final und die bedingten Kanten dazwischen."),
+        ("app.agent", "AgentState", "Gemeinsamer Zustand; sources und trace werden per Reducer (operator.add) über alle Schritte gesammelt."),
+        ("app.agent", "agent_node", "Claude mit Werkzeugen aufrufen; die Antwort samt Thinking-Blöcken unverändert in den Verlauf übernehmen."),
+        ("app.agent", "tools_node", "Alle Werkzeugaufrufe ausführen und als tool_result in einer Nachricht zurückgeben."),
+        ("app.agent", "run_tool", "Die vier Werkzeuge: zwei semantische Suchen, ein Payload-Filter, eine Kennzahlen-Ähnlichkeitssuche."),
+        ("app.agent", "route_after_agent", "Bedingte Kante: Werkzeuge oder Ende."),
+        ("app.agent", "route_after_tools", "Bedingte Kante: zurück zum Agenten oder Notbremse nach MAX_TOOL_ROUNDS."),
+        ("app.agent", "final_node", "Notbremse: Antwort mit tool_choice none erzwingen."),
+        ("app.main", "agent_run", "Endpunkt: graph.astream mit stream_mode updates (Knoten) und custom (Text-Deltas) als SSE."),
+    ],
 }
 
 MINIMAL: dict[str, str] = {
@@ -188,6 +199,79 @@ qdrant.upsert("workouts", points=[models.PointStruct(
 # 5. Suchen: mit using= wählt man den Vektor
 hits = qdrant.query_points("workouts", query=metric_vector, using="dense_metrics", limit=5).points
 print([(h.payload["summary"], h.score) for h in hits])
+''',
+    "m6": '''# pip install langgraph anthropic voyageai qdrant-client
+import operator
+from typing import Annotated, TypedDict
+
+import anthropic
+import voyageai
+from langgraph.graph import END, START, StateGraph
+from qdrant_client import QdrantClient
+
+client = anthropic.Anthropic()
+vo = voyageai.Client()
+qdrant = QdrantClient(url="http://localhost:6333")  # Collection "wissen" wie in Modul 4
+
+TOOLS = [{
+    "name": "suche_wissensbasis",
+    "description": "Semantische Suche in der Wissensbasis.",
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}]
+
+
+class State(TypedDict):
+    messages: list
+    rounds: int
+    log: Annotated[list[str], operator.add]  # Reducer: Einträge werden angehängt statt ersetzt
+
+
+def agent(state: State) -> dict:
+    response = client.messages.create(
+        model="claude-opus-5-5", max_tokens=8000, tools=TOOLS,
+        output_config={"effort": "low"}, messages=state["messages"],
+    )
+    # Antwort komplett übernehmen - inklusive Thinking-Blöcken
+    return {"messages": state["messages"] + [{"role": "assistant", "content": response.content}],
+            "log": [f"agent: {response.stop_reason}"]}
+
+
+def tools(state: State) -> dict:
+    results = []
+    for block in state["messages"][-1]["content"]:
+        if block.type == "tool_use":
+            vec = vo.embed([block.input["query"]], model="voyage-3-lite", input_type="query").embeddings[0]
+            hits = qdrant.query_points("wissen", query=vec, limit=3).points
+            text = "\\n".join(h.payload["text"] for h in hits)
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": text})
+    return {"messages": state["messages"] + [{"role": "user", "content": results}],
+            "rounds": state["rounds"] + 1, "log": [f"tools: {len(results)} Aufruf(e)"]}
+
+
+def route(state: State) -> str:
+    last = state["messages"][-1]["content"]
+    wants_tool = any(b.type == "tool_use" for b in last)
+    return "tools" if wants_tool and state["rounds"] < 3 else END
+
+
+builder = StateGraph(State)
+builder.add_node("agent", agent)
+builder.add_node("tools", tools)
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", route, ["tools", END])
+builder.add_edge("tools", "agent")
+graph = builder.compile()
+
+print(graph.get_graph().draw_mermaid())  # Graph als Mermaid-Diagramm
+result = graph.invoke({"messages": [{"role": "user", "content": "Was ist ein HNSW-Index?"}], "rounds": 0, "log": []})
+print(result["log"])
+print(next(b.text for b in result["messages"][-1]["content"] if b.type == "text"))
 ''',
 }
 

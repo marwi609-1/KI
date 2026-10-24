@@ -32,6 +32,7 @@ Beim ersten Start bettet das Backend die Beispielsätze und die Wissensbasis in 
 | Embeddings | Voyage AI, Standard `voyage-3-lite` (512 Dimensionen) |
 | Vektordatenbank | Qdrant v1.20, Collections `saetze`, `wissen` (Kosinus) und `workouts` (Named Vectors: Kosinus + Euklid) |
 | FIT-Parsing | `fitdecode`, Kennzahlen mit NumPy |
+| Agenten-Orchestrierung | LangGraph (Zustandsgraph); LLM-Aufrufe darin direkt über das `anthropic`-SDK |
 | LLM | Claude (`claude-opus-5-5`, Effort `low`) mit Streaming |
 | Frontend | HTML/JS, TailwindCSS, Plotly.js (`backend/static`) |
 
@@ -55,12 +56,18 @@ Browser ──► FastAPI ──► Voyage AI   (Text → Vektor)
    - 12 simulierte Beispiel-Einheiten (Rad, Lauf, Schwimmen; FTP 280 W) werden beim ersten Start angelegt. Dieselbe Datei erneut hochladen überschreibt die Einheit (ID aus dem Datei-Hash).
 
    Bewusste Abweichung vom Ursprungskonzept: Die Zusammenfassung wird per Template erzeugt, nicht zusätzlich per LLM angereichert – das spart Kosten und Latenz pro Upload und macht den Text reproduzierbar. Die Sportart ist wie im Konzept als eine Zahl kodiert; das Dashboard weist darauf hin, dass One-Hot-Kodierung sauberer wäre.
+6. **Agentic RAG (LangGraph)** – Dieselbe Idee wie Modul 4, aber das LLM entscheidet selbst, welche Werkzeuge es wie oft aufruft, und kann Ergebnisse verketten. Der Graph hat drei Knoten:
+   - `agent`: Claude mit Tool Use (Werkzeuge mit `strict: true`); die Antwort samt Thinking-Blöcken geht unverändert in den Verlauf.
+   - `tools`: führt die Werkzeugaufrufe aus – `suche_wissensbasis` und `suche_trainings` (semantisch), `filtere_trainings` (Qdrant-Payload-Filter, kein Vektor) und `aehnliche_trainings` (12D-Kennzahlenvektor über die ID einer Einheit).
+   - `final`: Notbremse nach 4 Werkzeugrunden, erzwingt mit `tool_choice: none` eine Antwort.
+
+   Das Dashboard zeigt den Graphen als Diagramm (aus `draw_mermaid()`) mit dem durchlaufenen Pfad, jede Entscheidung und jedes Werkzeugergebnis als Zeitleiste und die gestreamte Antwort mit Quellenangaben. Ohne `ANTHROPIC_API_KEY` plant ein einfacher regelbasierter Planer die Werkzeugaufrufe – der Graph läuft dann trotzdem durch, nur ohne generierte Antwort.
 
 ### Code-Ansicht für Entwickler
 
 Jedes Modul hat unten ein aufklappbares Panel **„Code hinter diesem Modul“** mit drei Reitern:
 
-- **Minimalbeispiel** – eigenständiges Python-Skript, das den Kern des Moduls ohne dieses Projekt nachbaut (`voyageai`, `numpy`, `qdrant-client`, `anthropic`, `fitdecode`).
+- **Minimalbeispiel** – eigenständiges Python-Skript, das den Kern des Moduls ohne dieses Projekt nachbaut (`voyageai`, `numpy`, `qdrant-client`, `anthropic`, `fitdecode`, `langgraph`).
 - **Backend (dieses Projekt)** – die tatsächlich laufenden Funktionen mit Datei und Zeilennummer. Sie werden per `inspect` live aus dem Quelltext gelesen (`backend/app/code_view.py`) und veralten daher nie.
 - **API-Aufruf** – der letzte Request des Frontends als `curl`-Befehl mit deiner Eingabe, dazu die Antwort des Backends (Vektoren gekürzt, bei RAG die Server-Sent Events).
 
@@ -83,7 +90,9 @@ Jedes Modul hat unten ein aufklappbares Panel **„Code hinter diesem Modul“**
 | GET | `/api/workouts/{id}/similar` | Ähnliche Einheiten nach `dense_metrics` und nach `dense_semantic` |
 | POST | `/api/workouts/search` | `{query, limit}` → semantische Suche |
 | POST | `/api/workouts/coach` | `{question, top_k}` → Server-Sent Events: `retrieval`, `delta`, `done`, `error` |
-| GET | `/api/code/{m1…m5}` | Minimalbeispiel und Projektcode für die Code-Ansicht |
+| GET | `/api/agent/graph` | Graph als Mermaid-Text, Werkzeuge, aktiver Planer |
+| POST | `/api/agent/run` | `{question}` → Server-Sent Events: `node` (pro durchlaufenem Knoten), `delta`, `done`, `error` |
+| GET | `/api/code/{m1…m6}` | Minimalbeispiel und Projektcode für die Code-Ansicht |
 | POST | `/api/seed` | Befüllung erneut versuchen (z. B. nach nachgetragenem Key) |
 
 ## Hinweise
