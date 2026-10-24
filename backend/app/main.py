@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import rag, vectorstore as vs
+from . import code_view, rag, vectorstore as vs
 from .embeddings import embedder
 
 log = logging.getLogger("lern-dashboard")
@@ -266,6 +266,14 @@ async def rag_pipeline(body: RagIn):
             yield sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/api/code/{module_id}")
+async def code(module_id: str):
+    result = code_view.module_code(module_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unbekanntes Modul")
+    return result
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

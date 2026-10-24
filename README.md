@@ -47,6 +47,14 @@ Browser ──► FastAPI ──► Voyage AI   (Text → Vektor)
 3. **2D-Vektorraum** – Alle Sätze werden aus Qdrant gelesen und per PCA (SVD in NumPy) auf 2D projiziert. Eine Suchanfrage wandert animiert an ihre Position; die Top-3-Nachbarn aus der vollen Dimension werden verbunden, das nächste Cluster wird über die Kategorie-Zentroiden bestimmt. Der erklärte Varianzanteil zeigt, wie viel Information die Projektion verliert. Eigene Sätze lassen sich dauerhaft speichern.
 4. **RAG-Inspektor** – Frage → Query-Embedding → Top-k aus Qdrant mit Match-Prozent, daneben eine Schlüsselwortsuche zum Vergleich → vollständiger Prompt → gestreamte Antwort mit Quellenangaben `[n]`. Die Wissensbasis enthält einen erfundenen Radsportverein („RSV Grünwald 1923“): Fakten, die kein LLM aus dem Training kennen kann. Fragen außerhalb der Wissensbasis (z. B. „Tour de France 2024“) soll das Modell ablehnen statt zu raten.
 
+### Code-Ansicht für Entwickler
+
+Jedes Modul hat unten ein aufklappbares Panel **„Code hinter diesem Modul“** mit drei Reitern:
+
+- **Minimalbeispiel** – eigenständiges Python-Skript, das den Kern des Moduls ohne dieses Projekt nachbaut (`voyageai`, `numpy`, `qdrant-client`, `anthropic`).
+- **Backend (dieses Projekt)** – die tatsächlich laufenden Funktionen mit Datei und Zeilennummer. Sie werden per `inspect` live aus dem Quelltext gelesen (`backend/app/code_view.py`) und veralten daher nie.
+- **API-Aufruf** – der letzte Request des Frontends als `curl`-Befehl mit deiner Eingabe, dazu die Antwort des Backends (Vektoren gekürzt, bei RAG die Server-Sent Events).
+
 ## API
 
 | Methode | Pfad | Zweck |
@@ -60,6 +68,7 @@ Browser ──► FastAPI ──► Voyage AI   (Text → Vektor)
 | GET / POST | `/api/knowledge`, `/api/knowledge/add` | Wissensbasis lesen / erweitern |
 | DELETE | `/api/custom` | Alle eigenen Einträge löschen |
 | POST | `/api/rag` | `{question, top_k}` → Server-Sent Events: `embedding`, `retrieval`, `delta`, `done`, `error` |
+| GET | `/api/code/{m1…m4}` | Minimalbeispiel und Projektcode für die Code-Ansicht |
 | POST | `/api/seed` | Befüllung erneut versuchen (z. B. nach nachgetragenem Key) |
 
 ## Hinweise

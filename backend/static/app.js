@@ -14,6 +14,7 @@ async function api(path, body, method) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : res.statusText);
+  if (CALL_MODULE[path]) recordCall(CALL_MODULE[path], { method: method || "POST", path, body, response: data });
   return data;
 }
 
@@ -312,10 +313,12 @@ $("f4").onsubmit = async (ev) => {
   $("note4").textContent = "";
   ["sources4", "keyword4", "prompt4", "ms4a", "ms4b"].forEach((id) => ($(id).textContent = ""));
   $("r4").classList.remove("hidden");
+  const ragBody = { question: $("t4").value, top_k: Number($("k4").value) };
+  const ragEvents = [];
   try {
     const res = await fetch("/api/rag", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: $("t4").value, top_k: Number($("k4").value) }),
+      body: JSON.stringify(ragBody),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     const reader = res.body.getReader();
@@ -331,11 +334,123 @@ $("f4").onsubmit = async (ev) => {
         buf = buf.slice(sep + 2);
         const event = raw.match(/^event: (.*)$/m)?.[1];
         const data = raw.match(/^data: (.*)$/m)?.[1];
-        if (event && data && handlers4[event]) handlers4[event](JSON.parse(data));
+        if (event && data && handlers4[event]) {
+          const parsed = JSON.parse(data);
+          ragEvents.push({ event, data: parsed });
+          handlers4[event](parsed);
+        }
       }
     }
+    recordCall("m4", { method: "POST", path: "/api/rag", body: ragBody, events: mergeDeltas(ragEvents) });
   } catch (e) { showError(e); } finally { busy(ev.target, false); }
 };
+
+// ---------- Code-Ansicht für Entwickler ----------
+
+const CALL_MODULE = { "/api/embed": "m1", "/api/compare": "m2", "/api/space/query": "m3" };
+const lastCall = {};
+const codeCache = {};
+const panelTab = {};
+
+function recordCall(mod, call) {
+  lastCall[mod] = call;
+  if (panelTab[mod] === "api") renderPanel(mod);
+}
+
+// Viele Text-Deltas zu einem Ereignis zusammenfassen, damit die Anzeige lesbar bleibt
+function mergeDeltas(events) {
+  const out = [];
+  for (const e of events) {
+    const prev = out[out.length - 1];
+    if (e.event === "delta" && prev?.event === "delta") prev.data = { text: prev.data.text + e.data.text, chunks: (prev.data.chunks || 1) + 1 };
+    else out.push({ event: e.event, data: { ...e.data } });
+  }
+  return out;
+}
+
+// Lange Zahlenarrays (Vektoren) kürzen
+function compact(value) {
+  return JSON.stringify(value, (key, v) =>
+    Array.isArray(v) && v.length > 6 && v.every((x) => typeof x === "number")
+      ? `[${v.slice(0, 5).map((x) => Number(x.toFixed(5))).join(", ")}, … ${v.length - 5} weitere Werte]`
+      : v, 2);
+}
+
+function codeBlock(code, lang) {
+  const id = `c${Math.random().toString(36).slice(2)}`;
+  return `<div class="relative mt-2">
+    <button data-copy="${id}" class="copy absolute right-2 top-2 text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Kopieren</button>
+    <pre><code id="${id}" class="language-${lang}">${esc(code)}</code></pre></div>`;
+}
+
+function curlFor(call) {
+  const body = call.body ? ` \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify(call.body).replace(/'/g, "'\\''")}'` : "";
+  return `curl -s${call.events ? "N" : ""} -X ${call.method} ${location.origin}${call.path}${body}`;
+}
+
+function renderPanel(mod) {
+  const panel = document.querySelector(`.code-panel[data-module=${mod}] .code-content`);
+  const tab = panelTab[mod];
+  const data = codeCache[mod];
+  let html = "";
+  if (tab === "minimal") {
+    html = `<p class="text-sm text-slate-600">Eigenständiges Skript, das den Kern dieses Moduls ohne das restliche Projekt nachbaut.</p>${codeBlock(data.minimal, "python")}`;
+  } else if (tab === "backend") {
+    html = `<p class="text-sm text-slate-600">Der Code, der in diesem Dashboard gerade läuft – live aus den Quelldateien gelesen.</p>` +
+      data.sources.map((src) => `
+        <div class="mt-4">
+          <div class="flex flex-wrap items-baseline gap-x-2 text-sm"><code class="font-semibold text-indigo-700">${esc(src.name)}</code><span class="text-xs text-slate-500">${esc(src.file)}:${src.line}</span></div>
+          <p class="text-sm text-slate-600">${esc(src.explanation)}</p>
+          ${codeBlock(src.code, "python")}
+        </div>`).join("");
+  } else {
+    const call = lastCall[mod];
+    if (!call) {
+      html = `<p class="text-sm text-slate-500">Führe das Modul einmal aus – dann erscheint hier der exakte HTTP-Aufruf mit deiner Eingabe und die Antwort des Backends.</p>`;
+    } else {
+      const resp = call.events
+        ? call.events.map((e) => `event: ${e.event}\ndata: ${compact(e.data)}`).join("\n\n")
+        : compact(call.response);
+      html = `<p class="text-sm text-slate-600">Diesen Aufruf hat das Frontend gerade an das Backend geschickt. Auf dem Server ausführbar (Vektoren in der Antwort gekürzt).</p>
+        ${codeBlock(curlFor(call), "bash")}
+        <h4 class="text-sm font-medium mt-4">Antwort${call.events ? " (Server-Sent Events – zur Lesbarkeit formatiert, Text-Deltas zusammengefasst)" : ""}</h4>
+        ${codeBlock(resp, call.events ? "plaintext" : "json")}`;
+    }
+  }
+  panel.innerHTML = html;
+  panel.querySelectorAll("pre code").forEach((el) => window.hljs && hljs.highlightElement(el));
+  panel.querySelectorAll(".copy").forEach((btn) => (btn.onclick = async () => {
+    await navigator.clipboard.writeText($(btn.dataset.copy).textContent);
+    btn.textContent = "Kopiert ✓";
+    setTimeout(() => (btn.textContent = "Kopieren"), 1500);
+  }));
+  document.querySelectorAll(`.code-panel[data-module=${mod}] .code-tab`).forEach((b) => b.classList.toggle("active", b.dataset.ctab === tab));
+}
+
+document.querySelectorAll(".code-panel").forEach((panel) => {
+  const mod = panel.dataset.module;
+  panel.innerHTML = `
+    <details class="bg-white rounded-xl shadow-sm">
+      <summary class="p-5 cursor-pointer font-semibold select-none"><span class="font-mono text-indigo-600">&lt;/&gt;</span> Code hinter diesem Modul</summary>
+      <div class="px-5 pb-5">
+        <div class="flex flex-wrap gap-2 text-sm">
+          <button data-ctab="minimal" class="code-tab px-3 py-1.5 rounded-lg bg-slate-100">Minimalbeispiel</button>
+          <button data-ctab="backend" class="code-tab px-3 py-1.5 rounded-lg bg-slate-100">Backend (dieses Projekt)</button>
+          <button data-ctab="api" class="code-tab px-3 py-1.5 rounded-lg bg-slate-100">API-Aufruf</button>
+        </div>
+        <div class="code-content mt-3"></div>
+      </div>
+    </details>`;
+  const open = async (tab) => {
+    panelTab[mod] = tab;
+    try {
+      codeCache[mod] ||= await api(`/api/code/${mod}`);
+      renderPanel(mod);
+    } catch (e) { showError(e); }
+  };
+  panel.querySelector("details").addEventListener("toggle", (ev) => { if (ev.target.open && !panelTab[mod]) open("minimal"); });
+  panel.querySelectorAll(".code-tab").forEach((b) => (b.onclick = () => open(b.dataset.ctab)));
+});
 
 showTab("m1");
 loadStatus();
