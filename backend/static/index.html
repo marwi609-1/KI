@@ -11,7 +11,7 @@
   <style>
     .tab.tab-active { background: #4f46e5; color: #fff; }
     .chip { cursor: pointer; }
-    #answer .cite { color: #4f46e5; font-weight: 600; }
+    #answer .cite, #coachans5 .cite { color: #4f46e5; font-weight: 600; }
     .code-panel pre { margin: 0; }
     .code-panel pre code.hljs { border-radius: 0.5rem; font-size: 12px; line-height: 1.5; max-height: 520px; }
     .code-tab.active { background: #1e293b; color: #fff; }
@@ -31,6 +31,7 @@
       <button data-tab="m2" class="tab px-3 py-1.5 rounded-lg bg-slate-100">2 · Distanz-Labor</button>
       <button data-tab="m3" class="tab px-3 py-1.5 rounded-lg bg-slate-100">3 · 2D-Vektorraum</button>
       <button data-tab="m4" class="tab px-3 py-1.5 rounded-lg bg-slate-100">4 · RAG-Inspektor</button>
+      <button data-tab="m5" class="tab px-3 py-1.5 rounded-lg bg-slate-100">5 · Trainingsdaten (FIT)</button>
     </nav>
   </header>
 
@@ -176,6 +177,101 @@
         </div>
       </div>
       <div class="code-panel" data-module="m4"></div>
+    </section>
+    <!-- Modul 5 -->
+    <section id="m5" class="module hidden space-y-4">
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <h2 class="text-lg font-semibold">Trainingsdaten vektorisieren</h2>
+        <p class="text-sm text-slate-600 mt-1">Eine FIT-Datei wird zu <b>zwei</b> Vektoren: einem 12-dimensionalen Kennzahlen-Vektor (präzise, mathematisch vergleichbar) und einem semantischen Vektor aus einer Textzusammenfassung inklusive deiner Notizen (Bedeutung, Kontext). Qdrant speichert beide als <em>Named Vectors</em> im selben Punkt.</p>
+        <div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span class="bg-slate-100 rounded-full px-3 py-1">.FIT</span><span>→</span>
+          <span class="bg-slate-100 rounded-full px-3 py-1">fitdecode · 1-Hz-Zeitreihen</span><span>→</span>
+          <span class="bg-slate-100 rounded-full px-3 py-1">NP · IF · TSS · Drift · Zonen</span><span>→</span>
+          <span class="bg-indigo-100 text-indigo-800 rounded-full px-3 py-1">dense_metrics (12D, Euklid)</span>
+          <span class="bg-indigo-100 text-indigo-800 rounded-full px-3 py-1">Text → Voyage → dense_semantic (Kosinus)</span><span>→</span>
+          <span class="bg-slate-100 rounded-full px-3 py-1">Qdrant</span>
+        </div>
+        <form id="f5" class="mt-4 grid gap-3">
+          <div class="flex flex-col sm:flex-row gap-2">
+            <input id="file5" type="file" accept=".fit,.FIT" class="flex-1 text-sm border border-slate-300 rounded-lg px-3 py-2">
+            <button class="bg-indigo-600 text-white rounded-lg px-4 py-2">Hochladen & vektorisieren</button>
+          </div>
+          <textarea id="notes5" rows="2" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Notizen zur Einheit (fließen in den semantischen Vektor ein), z. B. „Schwere Beine, Hitze“"></textarea>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+            <label class="grid gap-1 min-w-0">FTP (W)<input id="ftp5" type="number" min="50" class="w-full min-w-0 border border-slate-300 rounded-lg px-3 py-1.5"></label>
+            <label class="grid gap-1 min-w-0">HFmax (bpm)<input id="hrmax5" type="number" min="100" class="w-full min-w-0 border border-slate-300 rounded-lg px-3 py-1.5"></label>
+            <label class="grid gap-1 min-w-0">Schwellen-HF (bpm)<input id="lthr5" type="number" min="80" class="w-full min-w-0 border border-slate-300 rounded-lg px-3 py-1.5"></label>
+            <label class="grid gap-1 min-w-0">Schwellenpace (min:s/km)<input id="pace5" class="w-full min-w-0 border border-slate-300 rounded-lg px-3 py-1.5" placeholder="5:00"></label>
+          </div>
+          <p class="text-xs text-slate-500">Die Schwellenwerte bestimmen IF, TSS und die Zonen. Die 12 Beispiel-Einheiten sind simuliert (FTP 280 W, HFmax 188).</p>
+        </form>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-4">
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-semibold">Gespeicherte Einheiten <span id="count5" class="text-xs text-slate-400 font-normal"></span></h3>
+          <div class="mt-2 max-h-96 overflow-auto">
+            <table class="w-full text-sm"><thead class="text-xs text-slate-500 text-left sticky top-0 bg-white"><tr><th class="py-1">Datum</th><th>Einheit</th><th class="text-right">Dauer</th><th class="text-right">TSS</th></tr></thead><tbody id="list5"></tbody></table>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-semibold">Semantische Suche (dense_semantic)</h3>
+          <div class="mt-2 flex flex-wrap gap-2 text-xs" id="examples5"></div>
+          <form id="f5s" class="mt-2 flex gap-2">
+            <input id="q5" class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" value="Harte Intervalle, bei denen ich müde war">
+            <button class="bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm">Suchen</button>
+          </form>
+          <ol id="search5" class="mt-3 space-y-2 text-sm"></ol>
+        </div>
+      </div>
+
+      <div id="detail5" class="hidden space-y-4">
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <div class="flex flex-wrap justify-between gap-2">
+            <h3 id="title5" class="font-semibold text-lg"></h3>
+            <button id="del5" class="text-xs border border-slate-300 rounded-lg px-3 py-1 hover:bg-red-50">Löschen</button>
+          </div>
+          <div id="tiles5" class="mt-3 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 text-center"></div>
+          <div id="chart5" class="h-64 mt-3"></div>
+        </div>
+        <div class="grid lg:grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h3 class="font-semibold">dense_metrics – 12D-Kennzahlenvektor</h3>
+            <div id="mvec5" class="h-80"></div>
+            <p class="text-xs text-slate-500">Alle Werte auf 0–1 skaliert, damit keine Dimension die euklidische Distanz dominiert. Achtung: Die Sportart als <em>eine</em> Zahl zu kodieren, erfindet eine Reihenfolge (Laufen liegt „näher“ an Radfahren als Schwimmen) – sauberer wäre One-Hot-Kodierung mit drei Dimensionen.</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h3 class="font-semibold">dense_semantic – Textzusammenfassung → Voyage</h3>
+            <pre id="summary5" class="mt-2 text-xs bg-slate-50 rounded p-3 whitespace-pre-wrap"></pre>
+            <div id="svec5" class="h-24 mt-2"></div>
+            <div id="zones5" class="h-40"></div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-semibold">Ähnliche Einheiten – zwei Sichtweisen</h3>
+          <div class="grid lg:grid-cols-2 gap-4 mt-3">
+            <div><h4 class="text-sm font-medium text-indigo-700">Nach Kennzahlen (dense_metrics, euklidischer Abstand ↓)</h4><ol id="simm5" class="mt-2 space-y-2 text-sm"></ol></div>
+            <div><h4 class="text-sm font-medium text-indigo-700">Nach Bedeutung (dense_semantic, Kosinus ↑)</h4><ol id="sims5" class="mt-2 space-y-2 text-sm"></ol></div>
+          </div>
+          <p class="text-xs text-slate-500 mt-3">Der Kennzahlenvektor findet Einheiten mit ähnlicher Belastungsstruktur; der semantische Vektor reagiert zusätzlich auf Notizen und Beschreibung („Hitze“, „leer“, „Bestzeit“).</p>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <h3 class="font-semibold">Frag den Coach (RAG über deine Einheiten)</h3>
+        <div class="mt-2 flex flex-wrap gap-2 text-xs" id="examplesc5"></div>
+        <form id="f5c" class="mt-2 flex gap-2">
+          <input id="qc5" class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" value="Bei welchen Einheiten ist meine Herzfrequenz stark gedriftet und woran lag es?">
+          <button class="bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm">Fragen</button>
+        </form>
+        <div id="coach5" class="hidden mt-3 space-y-3">
+          <ol id="coachsrc5" class="space-y-1 text-xs text-slate-600"></ol>
+          <div id="coachans5" class="text-sm leading-relaxed whitespace-pre-wrap"></div>
+          <p id="coachnote5" class="text-xs text-slate-500"></p>
+          <details class="text-sm"><summary class="cursor-pointer text-slate-600">Prompt ansehen</summary><pre id="coachprompt5" class="mt-2 text-xs bg-slate-50 rounded p-3 whitespace-pre-wrap"></pre></details>
+        </div>
+      </div>
+      <div class="code-panel" data-module="m5"></div>
     </section>
   </main>
 

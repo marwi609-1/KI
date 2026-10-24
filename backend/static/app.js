@@ -49,6 +49,7 @@ function showTab(id) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("tab-active", t.dataset.tab === id));
   if (id === "m3" && !spaceLoaded) loadSpace();
   if (id === "m4") loadKnowledge();
+  if (id === "m5" && !workoutsLoaded) initWorkouts();
   window.dispatchEvent(new Event("resize"));
 }
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
@@ -59,7 +60,7 @@ async function loadStatus() {
     const llm = s.llm_available ? `LLM: ${s.llm_model}` : "LLM: nicht konfiguriert";
     $("status").innerHTML =
       `Embeddings: <b>${esc(s.embedding_model)}</b> · ${llm}<br>` +
-      `Qdrant: ${s.collections.saetze} Sätze, ${s.collections.wissen} Wissensdokumente`;
+      `Qdrant: ${s.collections.saetze} Sätze, ${s.collections.wissen} Wissensdokumente, ${s.collections.workouts} Trainings`;
     const box = $("seed-error");
     if (s.seed_error) {
       box.querySelector("div").textContent = `Datenbank konnte nicht befüllt werden: ${s.seed_error}`;
@@ -345,9 +346,223 @@ $("f4").onsubmit = async (ev) => {
   } catch (e) { showError(e); } finally { busy(ev.target, false); }
 };
 
+// ---------- Modul 5: Trainingsdaten (FIT) ----------
+
+let workoutsLoaded = false;
+let metricDims = [];
+let currentWorkout = null;
+const SPORT_DE = { cycling: "Rad", running: "Lauf", swimming: "Schwimmen" };
+const fmtDate = (iso) => new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+const fmtDur = (s) => `${Math.floor(s / 3600)}:${String(Math.round((s % 3600) / 60)).padStart(2, "0")} h`;
+const fmtPace = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+
+async function initWorkouts() {
+  try {
+    const meta = await api("/api/workouts/meta");
+    metricDims = meta.dimensions;
+    const d = meta.defaults;
+    $("ftp5").value = d.ftp; $("hrmax5").value = d.hr_max; $("lthr5").value = d.lthr; $("pace5").value = fmtPace(d.threshold_pace);
+    workoutsLoaded = true;
+    await loadWorkouts();
+  } catch (e) { showError(e); }
+}
+
+async function loadWorkouts() {
+  const items = await api("/api/workouts");
+  $("count5").textContent = `· ${items.length} in Qdrant`;
+  $("list5").innerHTML = items.map((w) => `
+    <tr class="border-t hover:bg-indigo-50 cursor-pointer ${currentWorkout === w.id ? "bg-indigo-50" : ""}" data-id="${w.id}">
+      <td class="py-1.5 pr-2 whitespace-nowrap">${fmtDate(w.timestamp)}</td>
+      <td class="pr-2">${esc(w.title)} <span class="text-xs text-slate-400">${SPORT_DE[w.sport] || esc(w.sport)}${w.source === "demo" ? " · Demo" : ""}</span></td>
+      <td class="text-right whitespace-nowrap">${fmtDur(w.metrics.moving_s)}</td>
+      <td class="text-right">${w.metrics.tss != null ? fmt(w.metrics.tss, 0) : "–"}</td>
+    </tr>`).join("");
+  $("list5").querySelectorAll("tr").forEach((tr) => (tr.onclick = () => showWorkout(tr.dataset.id)));
+}
+
+function resultItem(r, metric) {
+  const score = metric ? `Abstand ${fmt(r.score, 3)}` : `Kosinus ${fmt(r.score, 3)}`;
+  return `<li class="border border-slate-200 rounded-lg p-2 cursor-pointer hover:bg-indigo-50" data-id="${r.id}">
+    <div class="flex justify-between gap-2"><b>${esc(r.title)}</b><span class="text-indigo-700 whitespace-nowrap">${score}</span></div>
+    <div class="text-xs text-slate-500">${fmtDate(r.timestamp)} · ${SPORT_DE[r.sport] || esc(r.sport)} · TSS ${r.tss != null ? fmt(r.tss, 0) : "–"}</div></li>`;
+}
+
+function bindResults(el) {
+  el.querySelectorAll("li[data-id]").forEach((li) => (li.onclick = () => showWorkout(li.dataset.id)));
+}
+
+async function showWorkout(id) {
+  try {
+    const [w, sim] = await Promise.all([api(`/api/workouts/${id}`), api(`/api/workouts/${id}/similar`)]);
+    renderWorkout(w);
+    $("simm5").innerHTML = sim.metrics.map((r) => resultItem(r, true)).join("");
+    $("sims5").innerHTML = sim.semantic.map((r) => resultItem(r, false)).join("");
+    bindResults($("simm5")); bindResults($("sims5"));
+    currentWorkout = id;
+    loadWorkouts();
+    $("detail5").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) { showError(e); }
+}
+
+function renderWorkout(w) {
+  const m = w.metrics;
+  $("detail5").classList.remove("hidden");
+  $("title5").textContent = `${w.title} – ${fmtDate(w.timestamp)}`;
+  const tiles = [
+    ["Dauer", fmtDur(m.moving_s)],
+    ["Distanz", `${fmt(m.distance_km, 1)} km`],
+    ["TSS", m.tss != null ? fmt(m.tss, 0) : "–"],
+    ["IF", m.intensity_factor != null ? fmt(m.intensity_factor, 2) : "–"],
+    m.normalized_power_w ? ["NP", `${m.normalized_power_w} W`] : m.avg_pace_s_per_km ? ["Pace", `${fmtPace(m.avg_pace_s_per_km)} /km`] : ["Ø Tempo", m.avg_speed_kmh ? `${fmt(m.avg_speed_kmh, 1)} km/h` : "–"],
+    ["Ø / max HF", m.avg_hr ? `${m.avg_hr} / ${m.max_hr}` : "–"],
+    ["HF-Drift", m.hr_drift_percent != null ? `${m.hr_drift_percent > 0 ? "+" : ""}${fmt(m.hr_drift_percent, 1)} %` : "–"],
+    ["Höhenmeter", m.elevation_gain_m != null ? `${m.elevation_gain_m} m` : "–"],
+  ];
+  $("tiles5").innerHTML = tiles.map(([k, v]) => `<div class="bg-slate-50 rounded-lg p-2"><div class="text-xs text-slate-500">${k}</div><div class="font-semibold">${v}</div></div>`).join("");
+
+  const sr = w.series, traces = [];
+  if (sr.power) traces.push({ x: sr.t_min, y: sr.power, name: "Leistung (W)", line: { color: "#4f46e5", width: 1 } });
+  else if (sr.speed) traces.push({ x: sr.t_min, y: sr.speed.map((v) => v * 3.6), name: "Tempo (km/h)", line: { color: "#4f46e5", width: 1 } });
+  if (sr.hr) traces.push({ x: sr.t_min, y: sr.hr, name: "Herzfrequenz (bpm)", yaxis: "y2", line: { color: "#dc2626", width: 1 } });
+  Plotly.react("chart5", traces.map((t) => ({ ...t, type: "scatter", mode: "lines" })), {
+    margin: { l: 45, r: 45, t: 10, b: 35 }, height: 250, separators: ",.", legend: { orientation: "h", y: 1.12 },
+    xaxis: { title: { text: "Minuten", font: { size: 11 } } },
+    yaxis: { title: { text: traces[0]?.name || "", font: { size: 11 } } },
+    yaxis2: { overlaying: "y", side: "right", showgrid: false, title: { text: "HF", font: { size: 11 } } },
+    shapes: (m.intervals || []).map((iv) => ({ type: "rect", xref: "x", yref: "paper", x0: iv.start_s / 60, x1: (iv.start_s + iv.duration_s) / 60, y0: 0, y1: 1, fillcolor: "#fde68a", opacity: 0.35, line: { width: 0 } })),
+  }, PLOT_CFG);
+
+  const mv = w.vectors.dense_metrics;
+  Plotly.react("mvec5", [{
+    type: "bar", orientation: "h", x: mv.slice().reverse(), y: metricDims.map(([n]) => n).reverse(),
+    customdata: metricDims.map(([, r]) => r).reverse(), marker: { color: "#4f46e5" },
+    hovertemplate: "%{y}: %{x:.3f}<br>Skala: %{customdata}<extra></extra>",
+  }], { margin: { l: 95, r: 10, t: 5, b: 30 }, height: 310, separators: ",.", xaxis: { range: [0, 1] } }, PLOT_CFG);
+
+  $("summary5").textContent = w.summary_text;
+  stripe("svec5", [w.vectors.dense_semantic], [""], 80);
+  if (m.zones) {
+    Plotly.react("zones5", [{
+      type: "bar", x: ["Z1", "Z2", "Z3", "Z4", "Z5"], y: m.zones.map((z) => z * 100),
+      marker: { color: ["#94a3b8", "#60a5fa", "#34d399", "#fbbf24", "#f87171"] }, hovertemplate: "%{x}: %{y:.1f} %<extra></extra>",
+    }], { margin: { l: 35, r: 10, t: 25, b: 25 }, height: 150, separators: ",.", title: { text: `Zonenverteilung nach ${m.zone_basis}`, font: { size: 12 } }, yaxis: { ticksuffix: " %" } }, PLOT_CFG);
+  } else Plotly.purge("zones5");
+}
+
+function paceToSeconds(text) {
+  const [mm, ss] = text.split(":").map(Number);
+  return mm * 60 + (ss || 0);
+}
+
+$("f5").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const file = $("file5").files[0];
+  if (!file) return showError(new Error("Bitte eine .FIT-Datei auswählen."));
+  busy(ev.target, true);
+  try {
+    const fields = { notes: $("notes5").value, ftp: $("ftp5").value, hr_max: $("hrmax5").value, lthr: $("lthr5").value, threshold_pace: paceToSeconds($("pace5").value) };
+    const form = new FormData();
+    form.append("file", file);
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+    const res = await fetch("/api/workouts/upload-fit", { method: "POST", body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    recordCall("m5", { method: "POST", path: "/api/workouts/upload-fit", form: { file: file.name, ...fields }, response: data });
+    await showWorkout(data.id);
+    loadStatus();
+  } catch (e) { showError(e); } finally { busy(ev.target, false); }
+};
+
+$("del5").onclick = async () => {
+  if (!currentWorkout || !confirm("Diese Einheit aus Qdrant löschen?")) return;
+  try {
+    await api(`/api/workouts/${currentWorkout}`, null, "DELETE");
+    currentWorkout = null;
+    $("detail5").classList.add("hidden");
+    loadWorkouts(); loadStatus();
+  } catch (e) { showError(e); }
+};
+
+const EXAMPLES5 = ["Harte Intervalle, bei denen ich müde war", "Lange lockere Ausfahrt", "Hitze und zu wenig getrunken", "Lauftraining auf der Bahn", "Persönliche Bestzeit"];
+EXAMPLES5.forEach((q) => {
+  const chip = document.createElement("span");
+  chip.className = "chip bg-slate-100 hover:bg-indigo-100 rounded-full px-3 py-1";
+  chip.textContent = q;
+  chip.onclick = () => { $("q5").value = q; $("f5s").requestSubmit(); };
+  $("examples5").appendChild(chip);
+});
+
+$("f5s").onsubmit = async (ev) => {
+  ev.preventDefault();
+  busy(ev.target, true);
+  try {
+    const hits = await api("/api/workouts/search", { query: $("q5").value, limit: 5 });
+    $("search5").innerHTML = hits.map((r) => resultItem(r, false)).join("");
+    bindResults($("search5"));
+  } catch (e) { showError(e); } finally { busy(ev.target, false); }
+};
+
+async function streamSSE(path, body, onEvent) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const event = raw.match(/^event: (.*)$/m)?.[1];
+      const data = raw.match(/^data: (.*)$/m)?.[1];
+      if (event && data) onEvent(event, JSON.parse(data));
+    }
+  }
+}
+
+const EXAMPLESC5 = ["Bei welchen Einheiten ist meine Herzfrequenz stark gedriftet und woran lag es?", "Wie verteilt sich meine Intensität zwischen locker und hart?", "Welche Einheit war die härteste und warum?"];
+EXAMPLESC5.forEach((q) => {
+  const chip = document.createElement("span");
+  chip.className = "chip bg-slate-100 hover:bg-indigo-100 rounded-full px-3 py-1";
+  chip.textContent = q;
+  chip.onclick = () => { $("qc5").value = q; $("f5c").requestSubmit(); };
+  $("examplesc5").appendChild(chip);
+});
+
+$("f5c").onsubmit = async (ev) => {
+  ev.preventDefault();
+  busy(ev.target, true);
+  $("coach5").classList.remove("hidden");
+  ["coachsrc5", "coachans5", "coachnote5", "coachprompt5"].forEach((id) => ($(id).textContent = ""));
+  const body = { question: $("qc5").value, top_k: 4 };
+  const events = [];
+  let text = "";
+  try {
+    await streamSSE("/api/workouts/coach", body, (event, d) => {
+      events.push({ event, data: d });
+      if (event === "retrieval") {
+        $("coachsrc5").innerHTML = `<li class="font-medium text-slate-700">Gefundene Einheiten (${d.ms} ms):</li>` +
+          d.sources.map((s, i) => `<li>[${i + 1}] ${esc(s.title)} · Kosinus ${fmt(s.score, 3)}</li>`).join("");
+        $("coachprompt5").textContent = `SYSTEM:\n${d.prompt.system}\n\nUSER:\n${d.prompt.user}`;
+      } else if (event === "delta") {
+        text += d.text;
+        $("coachans5").innerHTML = esc(text).replace(/\[(\d+)\]/g, '<span class="cite">[$1]</span>');
+      } else if (event === "done") {
+        $("coachnote5").textContent = d.note + (d.ms ? ` · ${d.ms} ms` : "");
+      } else if (event === "error") {
+        $("coachnote5").textContent = `Fehler: ${d.detail}`;
+      }
+    });
+    recordCall("m5", { method: "POST", path: "/api/workouts/coach", body, events: mergeDeltas(events) });
+  } catch (e) { showError(e); } finally { busy(ev.target, false); }
+};
+
 // ---------- Code-Ansicht für Entwickler ----------
 
-const CALL_MODULE = { "/api/embed": "m1", "/api/compare": "m2", "/api/space/query": "m3" };
+const CALL_MODULE = { "/api/embed": "m1", "/api/compare": "m2", "/api/space/query": "m3", "/api/workouts/search": "m5" };
 const lastCall = {};
 const codeCache = {};
 const panelTab = {};
@@ -384,6 +599,10 @@ function codeBlock(code, lang) {
 }
 
 function curlFor(call) {
+  if (call.form) {
+    const fields = Object.entries(call.form).map(([k, v]) => ` \\\n  -F ${k === "file" ? `'file=@${v}'` : `'${k}=${String(v).replace(/'/g, "'\\''")}'`}`).join("");
+    return `curl -s -X POST ${location.origin}${call.path}${fields}`;
+  }
   const body = call.body ? ` \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify(call.body).replace(/'/g, "'\\''")}'` : "";
   return `curl -s${call.events ? "N" : ""} -X ${call.method} ${location.origin}${call.path}${body}`;
 }

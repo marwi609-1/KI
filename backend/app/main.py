@@ -9,22 +9,29 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import code_view, rag, vectorstore as vs
+from . import code_view, rag, vectorstore as vs, workouts
 from .embeddings import embedder
+from .fit_parser import AthleteSettings, parse_fit
+from .vectorizer import METRIC_DIMENSIONS
 
 log = logging.getLogger("lern-dashboard")
 state: dict[str, str | None] = {"seed_error": None}
 
 
+async def seed_all() -> None:
+    await vs.seed()
+    await workouts.seed(len(await embedder.embed_one("Dimensionstest")))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        await vs.seed()
+        await seed_all()
     except Exception as exc:  # App soll trotzdem starten und den Fehler im UI anzeigen
         log.exception("Seeding fehlgeschlagen")
         state["seed_error"] = f"{type(exc).__name__}: {exc}"
@@ -33,6 +40,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Lern-Dashboard Vektorsuche & RAG", lifespan=lifespan)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+MAX_FIT_BYTES = 25 * 1024 * 1024
 
 
 @app.exception_handler(Exception)
@@ -108,7 +116,7 @@ class RagIn(BaseModel):
 @app.get("/api/status")
 async def status():
     counts = {}
-    for name in (vs.SENTENCES_COLLECTION, vs.KNOWLEDGE_COLLECTION):
+    for name in (vs.SENTENCES_COLLECTION, vs.KNOWLEDGE_COLLECTION, workouts.COLLECTION):
         counts[name] = (await vs.client.count(name)).count if await vs.client.collection_exists(name) else 0
     return {
         "embedding_backend": embedder.backend,
@@ -122,7 +130,7 @@ async def status():
 
 @app.post("/api/seed")
 async def reseed():
-    await vs.seed()
+    await seed_all()
     state["seed_error"] = None
     return await status()
 
@@ -263,6 +271,114 @@ async def rag_pipeline(body: RagIn):
                     yield sse("done", {"note": payload, "ms": round((time.perf_counter() - t3) * 1000)})
         except Exception as exc:
             log.exception("RAG-Pipeline fehlgeschlagen")
+            yield sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+# ---------- Modul 5: Trainingsdaten (FIT) ----------
+
+
+class WorkoutSearchIn(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class CoachIn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=4, ge=1, le=10)
+
+
+@app.get("/api/workouts")
+async def workout_list():
+    return await workouts.list_workouts()
+
+
+@app.get("/api/workouts/meta")
+async def workout_meta():
+    return {"dimensions": METRIC_DIMENSIONS, "defaults": AthleteSettings().__dict__}
+
+
+@app.post("/api/workouts/upload-fit")
+async def upload_fit(
+    file: UploadFile = File(...),
+    notes: str = Form(default="", max_length=2000),
+    ftp: float = Form(default=250, gt=0),
+    hr_max: float = Form(default=190, gt=0),
+    lthr: float = Form(default=170, gt=0),
+    threshold_pace: float = Form(default=300, gt=0),
+):
+    data = await file.read(MAX_FIT_BYTES + 1)
+    if len(data) > MAX_FIT_BYTES:
+        raise HTTPException(status_code=413, detail="Datei größer als 25 MB")
+    try:
+        act = parse_fit(data)
+    except Exception as exc:  # fitdecode wirft je nach Defekt verschiedene Fehlertypen
+        raise HTTPException(status_code=400, detail=f"FIT-Datei nicht lesbar: {exc}") from exc
+    settings = AthleteSettings(ftp=ftp, hr_max=hr_max, lthr=lthr, threshold_pace=threshold_pace)
+    title = file.filename or "Upload"
+    return await workouts.store_activity(act, settings, notes, title, workouts.file_id(data), "upload")
+
+
+@app.post("/api/workouts/search")
+async def workout_search(body: WorkoutSearchIn):
+    vec = await embedder.embed_one(body.query, input_type="query")
+    return await workouts.search(vec, workouts.SEMANTIC, body.limit)
+
+
+@app.get("/api/workouts/{workout_id}")
+async def workout_detail(workout_id: str):
+    workout = await workouts.get_workout(workout_id)
+    if workout is None:
+        raise HTTPException(status_code=404, detail="Training nicht gefunden")
+    return workout
+
+
+@app.get("/api/workouts/{workout_id}/similar")
+async def workout_similar(workout_id: str, limit: int = 5):
+    workout = await workouts.get_workout(workout_id)
+    if workout is None:
+        raise HTTPException(status_code=404, detail="Training nicht gefunden")
+    v = workout["vectors"]
+    return {
+        "metrics": await workouts.search(v[workouts.METRICS], workouts.METRICS, limit, exclude=workout_id),
+        "semantic": await workouts.search(v[workouts.SEMANTIC], workouts.SEMANTIC, limit, exclude=workout_id),
+    }
+
+
+@app.delete("/api/workouts/{workout_id}")
+async def workout_delete(workout_id: str):
+    await workouts.delete(workout_id)
+    return {"ok": True}
+
+
+@app.post("/api/workouts/coach")
+async def workout_coach(body: CoachIn):
+    async def events():
+        try:
+            t0 = time.perf_counter()
+            qvec = await embedder.embed_one(body.question, input_type="query")
+            hits = await workouts.search(qvec, workouts.SEMANTIC, body.top_k)
+            sources = [{"title": h["title"], "text": h["summary_text"], "score": h["score"]} for h in hits]
+            yield sse(
+                "retrieval",
+                {
+                    "sources": sources,
+                    "ms": round((time.perf_counter() - t0) * 1000),
+                    "prompt": {"system": rag.COACH_PROMPT, "user": rag.build_user_prompt(body.question, sources)},
+                },
+            )
+            if not rag.llm_available():
+                yield sse("done", {"note": "Kein ANTHROPIC_API_KEY gesetzt – der Prompt oben würde an das LLM gehen."})
+                return
+            t1 = time.perf_counter()
+            async for kind, payload in rag.stream_answer(body.question, sources, system=rag.COACH_PROMPT):
+                if kind == "delta":
+                    yield sse("delta", {"text": payload})
+                else:
+                    yield sse("done", {"note": payload, "ms": round((time.perf_counter() - t1) * 1000)})
+        except Exception as exc:
+            log.exception("Coach-Anfrage fehlgeschlagen")
             yield sse("error", {"detail": f"{type(exc).__name__}: {exc}"})
 
     return StreamingResponse(events(), media_type="text/event-stream")

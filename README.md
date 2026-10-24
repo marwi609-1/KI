@@ -30,7 +30,8 @@ Beim ersten Start bettet das Backend die Beispielsätze und die Wissensbasis in 
 |---|---|
 | Backend | Python 3.13, FastAPI (`backend/app`) |
 | Embeddings | Voyage AI, Standard `voyage-3-lite` (512 Dimensionen) |
-| Vektordatenbank | Qdrant v1.20, Distanz: Kosinus, zwei Collections (`saetze`, `wissen`) |
+| Vektordatenbank | Qdrant v1.20, Collections `saetze`, `wissen` (Kosinus) und `workouts` (Named Vectors: Kosinus + Euklid) |
+| FIT-Parsing | `fitdecode`, Kennzahlen mit NumPy |
 | LLM | Claude (`claude-opus-5-5`, Effort `low`) mit Streaming |
 | Frontend | HTML/JS, TailwindCSS, Plotly.js (`backend/static`) |
 
@@ -46,12 +47,20 @@ Browser ──► FastAPI ──► Voyage AI   (Text → Vektor)
 2. **Distanz-Labor** – Zwei Sätze vergleichen: Tacho für die Kosinus-Ähnlichkeit, euklidischer Abstand, Wortüberlappung (Jaccard) als Gegenprobe, Heatmap mit dem Produkt pro Dimension (dessen Summe ist der Kosinus). Beispiel-Chips für Synonyme, Mehrdeutigkeit („Bank“), vertauschte Rollen und sprachübergreifende Sätze.
 3. **2D-Vektorraum** – Alle Sätze werden aus Qdrant gelesen und per PCA (SVD in NumPy) auf 2D projiziert. Eine Suchanfrage wandert animiert an ihre Position; die Top-3-Nachbarn aus der vollen Dimension werden verbunden, das nächste Cluster wird über die Kategorie-Zentroiden bestimmt. Der erklärte Varianzanteil zeigt, wie viel Information die Projektion verliert. Eigene Sätze lassen sich dauerhaft speichern.
 4. **RAG-Inspektor** – Frage → Query-Embedding → Top-k aus Qdrant mit Match-Prozent, daneben eine Schlüsselwortsuche zum Vergleich → vollständiger Prompt → gestreamte Antwort mit Quellenangaben `[n]`. Die Wissensbasis enthält einen erfundenen Radsportverein („RSV Grünwald 1923“): Fakten, die kein LLM aus dem Training kennen kann. Fragen außerhalb der Wissensbasis (z. B. „Tour de France 2024“) soll das Modell ablehnen statt zu raten.
+5. **Trainingsdaten (FIT)** – Upload einer `.FIT`-Datei (Garmin/ANT+) samt Notizen und Schwellenwerten (FTP, HFmax, Schwellen-HF, Schwellenpace). Pipeline:
+   - **Parsing** mit `fitdecode`, alle Kanäle auf 1 Hz; kurze Lücken (Smart Recording) werden aufgefüllt, Pausen > 10 s entfernt.
+   - **Kennzahlen:** NP, IF, TSS (aus Leistung; ohne Powermeter als rTSS aus der Pace bzw. hrTSS aus der HF – jeweils Näherungen), Arbeit, Ø/max HF, aerobe Entkopplung (Pa:HR bzw. Pace:HR, erste vs. zweite Hälfte), Zonen Z1–Z5 (Leistung nach % FTP, sonst HF nach % HFmax), Höhenmeter, automatisch erkannte Intervalle (≥ 2 min über 85 % FTP).
+   - **Zwei Vektoren in einem Qdrant-Punkt:** `dense_metrics` (12D, jede Dimension auf 0–1 skaliert, euklidische Distanz) und `dense_semantic` (Voyage-Embedding einer Textzusammenfassung inkl. Notizen, Kosinus).
+   - **Oberfläche:** Zeitreihen mit markierten Intervallen, 12D-Vektor als Balkendiagramm, Zusammenfassung, Zonenverteilung, „ähnliche Einheiten“ nach Kennzahlen vs. nach Bedeutung im direkten Vergleich, semantische Suche und „Frag den Coach“ (RAG über die eigenen Einheiten mit Claude).
+   - 12 simulierte Beispiel-Einheiten (Rad, Lauf, Schwimmen; FTP 280 W) werden beim ersten Start angelegt. Dieselbe Datei erneut hochladen überschreibt die Einheit (ID aus dem Datei-Hash).
+
+   Bewusste Abweichung vom Ursprungskonzept: Die Zusammenfassung wird per Template erzeugt, nicht zusätzlich per LLM angereichert – das spart Kosten und Latenz pro Upload und macht den Text reproduzierbar. Die Sportart ist wie im Konzept als eine Zahl kodiert; das Dashboard weist darauf hin, dass One-Hot-Kodierung sauberer wäre.
 
 ### Code-Ansicht für Entwickler
 
 Jedes Modul hat unten ein aufklappbares Panel **„Code hinter diesem Modul“** mit drei Reitern:
 
-- **Minimalbeispiel** – eigenständiges Python-Skript, das den Kern des Moduls ohne dieses Projekt nachbaut (`voyageai`, `numpy`, `qdrant-client`, `anthropic`).
+- **Minimalbeispiel** – eigenständiges Python-Skript, das den Kern des Moduls ohne dieses Projekt nachbaut (`voyageai`, `numpy`, `qdrant-client`, `anthropic`, `fitdecode`).
 - **Backend (dieses Projekt)** – die tatsächlich laufenden Funktionen mit Datei und Zeilennummer. Sie werden per `inspect` live aus dem Quelltext gelesen (`backend/app/code_view.py`) und veralten daher nie.
 - **API-Aufruf** – der letzte Request des Frontends als `curl`-Befehl mit deiner Eingabe, dazu die Antwort des Backends (Vektoren gekürzt, bei RAG die Server-Sent Events).
 
@@ -68,7 +77,13 @@ Jedes Modul hat unten ein aufklappbares Panel **„Code hinter diesem Modul“**
 | GET / POST | `/api/knowledge`, `/api/knowledge/add` | Wissensbasis lesen / erweitern |
 | DELETE | `/api/custom` | Alle eigenen Einträge löschen |
 | POST | `/api/rag` | `{question, top_k}` → Server-Sent Events: `embedding`, `retrieval`, `delta`, `done`, `error` |
-| GET | `/api/code/{m1…m4}` | Minimalbeispiel und Projektcode für die Code-Ansicht |
+| GET | `/api/workouts` | Alle Einheiten (ohne Vektoren) |
+| POST | `/api/workouts/upload-fit` | Multipart: `file`, `notes`, `ftp`, `hr_max`, `lthr`, `threshold_pace` (s/km) → Kennzahlen, beide Vektoren |
+| GET / DELETE | `/api/workouts/{id}` | Einheit inkl. Vektoren und Zeitreihen lesen / löschen |
+| GET | `/api/workouts/{id}/similar` | Ähnliche Einheiten nach `dense_metrics` und nach `dense_semantic` |
+| POST | `/api/workouts/search` | `{query, limit}` → semantische Suche |
+| POST | `/api/workouts/coach` | `{question, top_k}` → Server-Sent Events: `retrieval`, `delta`, `done`, `error` |
+| GET | `/api/code/{m1…m5}` | Minimalbeispiel und Projektcode für die Code-Ansicht |
 | POST | `/api/seed` | Befüllung erneut versuchen (z. B. nach nachgetragenem Key) |
 
 ## Hinweise

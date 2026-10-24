@@ -27,12 +27,22 @@ def build_user_prompt(question: str, sources: list[dict]) -> str:
     return f"<quellen>\n{blocks}\n</quellen>\n\nFrage: {question}"
 
 
-async def stream_answer(question: str, sources: list[dict]) -> AsyncIterator[tuple[str, str]]:
+COACH_PROMPT = (
+    "Du bist ein erfahrener Ausdauer-Trainer in einem Lern-Dashboard. Die Quellen sind Zusammenfassungen "
+    "von Trainingseinheiten des Athleten (Kennzahlen, Zonen, Herzfrequenz-Drift, Notizen). Beantworte die Frage "
+    "ausschließlich auf Basis dieser Einheiten und belege Aussagen mit der Quellennummer in eckigen Klammern, z. B. [2]. "
+    "Wenn die Einheiten die Frage nicht beantworten, sage das klar. Keine medizinischen Diagnosen. Antworte knapp auf Deutsch."
+)
+
+
+async def stream_answer(
+    question: str, sources: list[dict], system: str = SYSTEM_PROMPT
+) -> AsyncIterator[tuple[str, str]]:
     """Liefert ("delta", text) während der Generierung und am Ende ("done", Hinweis)."""
     async with _client.beta.messages.stream(
         model=settings.claude_model,
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=system,
         output_config={"effort": settings.claude_effort},
         # Bei einer Ablehnung durch Sicherheitsklassifikatoren springt serverseitig ein Ersatzmodell ein
         betas=["server-side-fallback-2026-07-01"],
